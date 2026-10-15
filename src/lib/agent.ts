@@ -130,7 +130,7 @@ export async function raspunde(telefon: string, nume: string, mesaj: string): Pr
 
   if (!raspuns) raspuns = "Scuze, nu am reușit să înțeleg. Poți scrie din nou, cu ziua și ora?";
   // WhatsApp îngroașe textul cu un singur asterisc (*text*), nu cu două ca Markdown.
-  raspuns = raspuns.replace(/**(.+?)**/g, "*$1*");
+  raspuns = raspuns.replace(/\*\*(.+?)\*\*/g, "*$1*");
   await salveazaIstoric(telefon, "assistant", raspuns);
   return raspuns;
 }
