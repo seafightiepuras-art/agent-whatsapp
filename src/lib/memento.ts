@@ -99,3 +99,25 @@ export async function stergeMemento(telefon: string, id: string): Promise<{ ok: 
   // Notificările rămase nu se mai trimit: cron-ul ignoră programările anulate.
   return { ok: true };
 }
+
+/** Mută o programare: creează versiunea nouă și, doar dacă a reușit, o anulează pe cea veche. */
+export async function mutaMemento(
+  telefon: string,
+  id: string,
+  nou: { titlu?: string; evenimentLocal: string; notificariLocale: string[] }
+): Promise<{ ok: true; memento: MementoSalvat } | { ok: false; eroare: string }> {
+  const supabase = db();
+  const { data: vechi } = await supabase
+    .from("agent_memento")
+    .select("titlu")
+    .eq("id", id)
+    .eq("telefon", telefon)
+    .eq("status", "activ")
+    .maybeSingle();
+  if (!vechi) return { ok: false, eroare: "Nu am găsit programarea asta." };
+
+  const rezultat = await salveazaMemento(telefon, nou.titlu?.trim() || vechi.titlu, nou.evenimentLocal, nou.notificariLocale);
+  if (!rezultat.ok) return rezultat;
+  await supabase.from("agent_memento").update({ status: "anulat" }).eq("id", id).eq("telefon", telefon);
+  return rezultat;
+}

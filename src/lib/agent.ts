@@ -2,9 +2,9 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { db } from "@/lib/db";
 import { acumLocal } from "@/lib/timp";
-import { listeazaMemento, salveazaMemento, stergeMemento } from "@/lib/memento";
+import { listeazaMemento, mutaMemento, salveazaMemento, stergeMemento } from "@/lib/memento";
 
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = "claude-sonnet-5-5";
 const MAX_RUNDE = 5;
 const ISTORIC_MESAJE = 8;
 const ISTORIC_ORE = 3;
@@ -13,12 +13,12 @@ const UNELTE: Anthropic.Messages.Tool[] = [
   {
     name: "salveaza_memento",
     description:
-      "Salvează o programare și programează notificările de reamintire. Toate datele sunt ora României, format AAAA-LL-ZZTHH:MM (fără fus orar).",
+      "Salvează o reamintire sau o programare și programează notificările. Toate datele sunt ora României, format AAAA-LL-ZZTHH:MM (fără fus orar).",
     input_schema: {
       type: "object",
       properties: {
-        titlu: { type: "string", description: "Ce este programarea, scurt (ex. 'Dentist')." },
-        eveniment_la: { type: "string", description: "Când are loc, ex. 2026-10-16T10:00." },
+        titlu: { type: "string", description: "Ce trebuie ținut minte, scurt (ex. 'Dentist', 'Ia pastila')." },
+        eveniment_la: { type: "string", description: "Când are loc sau când trebuie făcut, ex. 2026-10-16T10:00." },
         notificari_la: {
           type: "array",
           items: { type: "string" },
@@ -34,6 +34,21 @@ const UNELTE: Anthropic.Messages.Tool[] = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "muta_memento",
+    description:
+      "Mută o programare la altă zi/oră (și opțional îi schimbă titlul). Dai noul eveniment_la și noile notificari_la, la fel ca la salveaza_memento.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Id-ul din listeaza_memento." },
+        titlu: { type: "string", description: "Titlul nou, doar dacă se schimbă." },
+        eveniment_la: { type: "string", description: "Noul moment, ex. 2026-10-16T11:00." },
+        notificari_la: { type: "array", items: { type: "string" } },
+      },
+      required: ["id", "eveniment_la", "notificari_la"],
+    },
+  },
+  {
     name: "sterge_memento",
     description: "Anulează o programare după id (luat din listeaza_memento).",
     input_schema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
@@ -41,19 +56,27 @@ const UNELTE: Anthropic.Messages.Tool[] = [
 ];
 
 function prompt(nume: string): string {
-  return `Ești asistentul de memento-uri al lui ${nume}, pe WhatsApp. Vorbești în română, scurt și prietenos: mesaje de 1-3 rânduri, fără formatare complicată.
+  return `Ești asistentul personal de memento-uri al lui ${nume}, pe WhatsApp. Ești isteț, cald și direct: răspunzi în română, în 1-3 rânduri, fără formatare complicată și cu cel mult un emoji.
 Acum este: ${acumLocal()}.
 
-Poți: să salvezi programări (salveaza_memento), să le arăți (listeaza_memento) și să le anulezi (sterge_memento).
+Poți: să salvezi (salveaza_memento), să arăți (listeaza_memento), să muți (muta_memento) și să anulezi (sterge_memento).
 
-Reguli:
-- Folosești mereu ora României. În unelte, datele sunt AAAA-LL-ZZTHH:MM, fără fus orar.
-- Dacă lipsește ceva esențial (ziua sau ora), întrebi o singură dată, scurt. Nu inventa ora.
-- Notificări implicite, dacă omul nu cere altfel: seara dinainte la 20:00 și cu o oră înainte de programare. Dacă programarea e azi, doar cu o oră înainte (sau cu 15 minute înainte, dacă nu mai e timp pentru o oră).
-- Dacă omul cere ceva anume ("amintește-mi cu 2 ore înainte", "și dimineața la 8"), faci exact asta, în loc de varianta implicită.
-- După ce salvezi, confirmi clar: ce, când și când îl anunți. Spui DOAR notificările din câmpul "notificari" al rezultatului uneltei, exact cu zilele și orele de acolo, nu inventa altele. Dacă "notificari_omise" e mai mare ca 0, spune pe scurt că o reamintire a fost sărită fiindcă momentul ei trecuse deja (de exemplu "seara dinainte" când programarea e mâine dimineață și e deja după ora 20:00).
-- La "ce programări am?" folosești listeaza_memento. La "anulează X" listezi întâi ca să afli id-ul, apoi ștergi; dacă pot fi mai multe, întrebi care.
-- Nu discuți alte subiecte. Dacă ți se cere altceva, spui politicos că te ocupi doar de memento-uri.`;
+Cum gândești:
+- Acționezi imediat când ai ziua și ora (sau o poți deduce). Întrebi DOAR ce lipsește cu adevărat, într-o singură întrebare scurtă. Nu întrebi niciodată despre notificări, ai reguli implicite mai jos.
+- Dacă mesajul e vag ("poți să-mi reamintești ceva?"), răspunzi scurt: "Sigur! Ce să-ți reamintesc și când?".
+- Răspunsurile scurte ("peste 5 minute", "la 10", "da", "doar atât") se leagă de ultima întrebare din conversație, nu sunt cereri noi.
+- "peste X minute/ore" se calculează de la momentul de acum, cu ora exactă.
+
+Două feluri de cereri:
+1. REAMINTIRE simplă: omul vrea să fie anunțat la un moment ca să facă ceva ("peste 5 minute să iau pastila", "la 18:00 să sun la bancă", "mâine dimineață să iau pâine"). Salvezi cu eveniment_la = acel moment și O SINGURĂ notificare, chiar atunci. Fără notificări în plus, fără întrebări. Dacă nu spune ora ("mâine dimineață"), alegi una rezonabilă (dimineața 8:00, prânz 12:00, după-amiază 15:00, seara 19:00) și o spui în confirmare.
+2. PROGRAMARE (dentist, ședință, întâlnire, examen) la o oră fixă: notificări implicite seara dinainte la 20:00 și cu o oră înainte. Dacă programarea e azi: cu o oră înainte dacă mai e timp, altfel cu 15 minute înainte, altfel chiar la ora programării.
+Dacă omul cere altfel ("cu 2 ore înainte", "și dimineața la 8"), faci exact asta, în loc de varianta implicită.
+
+Confirmarea: scurtă și precisă, de exemplu "Gata, la 21:10 te anunț să iei pastila." Spui DOAR notificările din câmpul "notificari" din rezultatul uneltei, cu zilele și orele de acolo, nu inventa altele. Dacă "notificari_omise" e mai mare ca 0, spune în câteva cuvinte că o reamintire a fost sărită fiindcă momentul ei trecuse.
+
+Listare, mutare, anulare: la "ce programări am?" folosești listeaza_memento. La "mută/anulează X" listezi întâi ca să afli id-ul; dacă e un singur candidat evident, acționezi fără să mai întrebi. La mutare calculezi din nou notificările după aceleași reguli.
+
+Nu discuți alte subiecte: dacă ți se cere altceva, spui politicos că te ocupi doar de memento-uri.`;
 }
 
 async function executa(telefon: string, nume: string, intrare: Record<string, unknown>): Promise<unknown> {
@@ -67,6 +90,12 @@ async function executa(telefon: string, nume: string, intrare: Record<string, un
       );
     case "listeaza_memento":
       return listeazaMemento(telefon);
+    case "muta_memento":
+      return mutaMemento(telefon, String(intrare.id ?? ""), {
+        titlu: typeof intrare.titlu === "string" ? intrare.titlu : undefined,
+        evenimentLocal: String(intrare.eveniment_la ?? ""),
+        notificariLocale: Array.isArray(intrare.notificari_la) ? intrare.notificari_la.map(String) : [],
+      });
     case "sterge_memento":
       return stergeMemento(telefon, String(intrare.id ?? ""));
     default:
