@@ -7,6 +7,8 @@ export interface MementoSalvat {
   titlu: string;
   eveniment: string;
   notificari: string[];
+  /** Câte notificări cerute au fost sărite fiindcă momentul lor trecuse deja sau cădea după programare. */
+  notificari_omise: number;
 }
 
 /** Salvează o programare și notificările ei. Datele vin ca oră locală a României. */
@@ -23,9 +25,11 @@ export async function salveazaMemento(
 
   // Notificările în trecut sau după eveniment nu au sens: le ignorăm.
   const acum = Date.now();
-  const notificari = [...new Set(notificariLocale)]
+  const cerute = [...new Set(notificariLocale)];
+  const notificari = cerute
     .map((l) => localLaUtc(l))
     .filter((d): d is Date => d !== null && d.getTime() > acum && d.getTime() <= eveniment.getTime());
+  const omise = cerute.length - notificari.length;
   if (notificari.length === 0) {
     return { ok: false, eroare: "Nicio notificare rămâne în viitor înainte de programare. Ce moment de reamintire vrei?" };
   }
@@ -53,6 +57,7 @@ export async function salveazaMemento(
       titlu: titlu.trim(),
       eveniment: formateazaLocal(eveniment),
       notificari: notificari.map((d) => formateazaLocal(d)),
+      notificari_omise: omise,
     },
   };
 }
