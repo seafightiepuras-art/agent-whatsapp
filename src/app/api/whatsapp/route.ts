@@ -15,6 +15,15 @@ export async function GET(request: Request) {
   return new Response("Interzis", { status: 403 });
 }
 
+/** Diagnostic temporar: lasă o urmă în baza de date pentru fiecare cerere primită (se șterge după ce totul merge). */
+async function urma(motiv: string) {
+  try {
+    await db().from("agent_mesaje_procesate").insert({ id: `diag-${Date.now()}-${motiv}`.slice(0, 120) });
+  } catch {
+    // ignorat
+  }
+}
+
 interface MesajMeta {
   id: string;
   from: string;
@@ -26,6 +35,7 @@ interface MesajMeta {
 export async function POST(request: Request) {
   const corpBrut = await request.text();
   if (!semnaturaValida(corpBrut, request.headers.get("x-hub-signature-256"))) {
+    await urma(`semnatura-invalida-${request.headers.get("x-hub-signature-256") ? "cu-antet" : "fara-antet"}-${process.env.WHATSAPP_APP_SECRET ? "secret-setat" : "secret-lipsa"}`);
     return new Response("Semnătură invalidă", { status: 401 });
   }
 
@@ -38,11 +48,15 @@ export async function POST(request: Request) {
 
   const permise = numerePermise();
   const mesaje = (date.entry ?? []).flatMap((e) => (e.changes ?? []).flatMap((c) => c.value?.messages ?? []));
+  await urma(`primit-${mesaje.length}-mesaje`);
 
   for (const mesaj of mesaje) {
     try {
       const nume = permise[mesaj.from];
-      if (!nume) continue; // număr necunoscut: ignorat, fără niciun răspuns
+      if (!nume) {
+        await urma(`numar-necunoscut-${mesaj.from}`);
+        continue; // număr necunoscut: ignorat, fără niciun răspuns
+      }
 
       // Fiecare mesaj se procesează o singură dată, chiar dacă Meta îl retrimite.
       const { error } = await db().from("agent_mesaje_procesate").insert({ id: mesaj.id });
@@ -55,9 +69,13 @@ export async function POST(request: Request) {
 
       const raspuns = await raspunde(mesaj.from, nume, mesaj.text.body);
       const rezultat = await trimiteText(mesaj.from, raspuns);
-      if (!rezultat.ok) console.error("Nu am putut trimite răspunsul:", rezultat.eroare);
+      if (!rezultat.ok) {
+        console.error("Nu am putut trimite răspunsul:", rezultat.eroare);
+        await urma(`trimitere-esuata-${rezultat.cod ?? "fara-cod"}-${(rezultat.eroare ?? "").slice(0, 60)}`);
+      }
     } catch (e) {
       console.error("Eroare la procesarea mesajului:", e);
+      await urma(`eroare-${String((e as Error)?.message ?? e).slice(0, 80)}`);
     }
   }
 
