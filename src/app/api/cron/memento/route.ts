@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { formateazaLocal } from "@/lib/timp";
-import { trimiteSablon, trimiteText } from "@/lib/whatsapp";
+import { trimiteSablon, trimiteText, type RezultatTrimitere } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
@@ -31,11 +31,26 @@ async function trimiteScadente(request: Request) {
     const m = n.memento as unknown as { telefon: string; titlu: string; eveniment_la: string };
     const cand = formateazaLocal(m.eveniment_la);
 
-    let rezultat = await trimiteText(m.telefon, `Memento: ${m.titlu}\n${cand}`);
+    // Mesajul liber merge doar în 24h de la ultimul mesaj al omului. Meta acceptă și mesajele din afara ferestrei
+    // (răspunde 200), dar nu le livrează — de aceea decidem noi, după ultimul mesaj primit, ce trimitem.
+    const { data: ultim } = await supabase
+      .from("agent_istoric")
+      .select("creat_la")
+      .eq("telefon", m.telefon)
+      .eq("rol", "user")
+      .order("creat_la", { ascending: false })
+      .limit(1);
+    const inFereastra = !!ultim?.[0] && Date.now() - new Date(ultim[0].creat_la).getTime() < 23 * 3600_000;
 
-    // Mesajul liber merge doar în 24h de la ultimul mesaj al omului; dincolo de asta trebuie șablon aprobat.
     const sablon = process.env.WHATSAPP_SABLON_MEMENTO;
-    if (!rezultat.ok && sablon) rezultat = await trimiteSablon(m.telefon, sablon, [m.titlu, cand]);
+    let rezultat: RezultatTrimitere;
+    if (inFereastra) {
+      rezultat = await trimiteText(m.telefon, `Memento: ${m.titlu}\n${cand}`);
+    } else if (sablon) {
+      rezultat = await trimiteSablon(m.telefon, sablon, [m.titlu, cand]);
+    } else {
+      rezultat = { ok: false, eroare: "Fereastra de 24h a expirat și nu e configurat WHATSAPP_SABLON_MEMENTO." };
+    }
 
     if (rezultat.ok) {
       trimise++;
